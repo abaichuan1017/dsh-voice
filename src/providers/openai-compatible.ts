@@ -67,12 +67,15 @@ function normalizeBaseUrl(baseUrl: string): string {
 /**
  * Read the endpoint's error body without letting a second failure mask the first.
  * @param response - the non-OK response.
+ * @param signal - caller-owned cancellation, preserved even while reading an error response.
+ * @param timeout - the deadline covering response headers and body.
  * @returns a bounded diagnostic string, empty when the body cannot be read.
  */
-async function readErrorBody(response: Response): Promise<string> {
+async function readErrorBody(response: Response, signal: AbortSignal, timeout: AbortSignal): Promise<string> {
   try {
     return (await response.text()).slice(0, 512)
-  } catch {
+  } catch (error) {
+    if (signal.aborted || timeout.aborted) throwTransportFailure(error, signal, timeout.aborted)
     // A body that cannot be read adds nothing to the status the caller already has, and letting
     // this throw would replace a classified provider-rejected failure with a stream error.
     return ''
@@ -177,12 +180,13 @@ export class OpenAiCompatibleTranscription extends TranscriptionEngine {
       throwTransportFailure(error, signal, timeout.aborted)
     }
 
-    if (!response.ok) throw classifyHttpFailure(response.status, await readErrorBody(response))
+    if (!response.ok) throw classifyHttpFailure(response.status, await readErrorBody(response, signal, timeout))
 
     let payload: unknown
     try {
       payload = await response.json()
     } catch (error) {
+      if (signal.aborted || timeout.aborted) throwTransportFailure(error, signal, timeout.aborted)
       throw new TranscriptionError('provider-rejected', 'endpoint returned a non-JSON body', { cause: error })
     }
     return parseTranscriptionBody(payload)
